@@ -1,0 +1,17 @@
+name: Check ✅
+on: [pull_request, push]
+jobs:
+  autopep8:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Run PEP8
+        id: auto-pep8
+        uses: peter-evans/autopep8@v2
+        with:
+          args: --recursive --in-place --aggressive --aggressive .
+
+      - name: Verify PEP8
+        if: steps.auto-pep8.outputs.exit-code == 2
+        run: exit 1
