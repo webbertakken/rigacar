@@ -12,6 +12,6 @@ jobs:
         with:
           args: --recursive --in-place --aggressive --aggressive .
 
-      - name: Verify PEP8
+      - name: Fail for PEP8 violations
         if: steps.auto-pep8.outputs.exit-code == 2
         run: exit 1
