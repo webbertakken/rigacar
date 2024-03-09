@@ -34,7 +34,9 @@ def cursor(cursor_mode):
                 return func(self, context, *args, **kwargs)
             finally:
                 context.window.cursor_modal_restore()
+
         return wrapper
+
     return cursor_decorator
 
 
@@ -136,7 +138,7 @@ class QuaternionFCurvesEvaluator(object):
 
 def fix_old_steering_rotation(rig_object):
     """
-    Fix  armature generated with rigacar version < 6.0
+    Fix  armature generated with Rigacar version < 6.0
     """
     if rig_object.pose and rig_object.pose.bones:
         if 'MCH-Steering.rotation' in rig_object.pose.bones:
@@ -195,7 +197,8 @@ class BakingOperator(object):
 
     def _bake_action(self, context, *source_bones):
         action = context.object.animation_data.action
-        nla_tweak_mode = context.object.animation_data.use_tweak_mode if hasattr(context.object.animation_data, 'use_tweak_mode') else False
+        nla_tweak_mode = context.object.animation_data.use_tweak_mode if hasattr(context.object.animation_data,
+                                                                                 'use_tweak_mode') else False
 
         # saving context
         selected_bones = [b for b in context.object.data.bones if b.select]
@@ -372,10 +375,12 @@ class ANIM_OT_carSteeringBake(bpy.types.Operator, BakingOperator):
             length_ratio = bone_offset * self.rotation_factor / projected_steering_direction
             steering_direction_vector *= length_ratio
 
-            steering_position = mathutils.geometry.distance_point_to_plane(steering_direction_vector, world_space_bone_direction_vector, world_space_bone_normal_vector)
+            steering_position = mathutils.geometry.distance_point_to_plane(steering_direction_vector,
+                                                                           world_space_bone_direction_vector,
+                                                                           world_space_bone_normal_vector)
 
             if previous_steering_position is not None \
-               and abs(steering_position - previous_steering_position) < steering_threshold:
+                    and abs(steering_position - previous_steering_position) < steering_threshold:
                 continue
 
             yield f, steering_position
@@ -413,8 +418,10 @@ class ANIM_OT_carClearSteeringWheelsRotation(bpy.types.Operator):
     bl_description = "Clear generated rotation for steering and wheels"
     bl_options = {'REGISTER', 'UNDO'}
 
-    clear_steering: bpy.props.BoolProperty(name="Steering", description="Clear generated animation for steering", default=True)
-    clear_wheels: bpy.props.BoolProperty(name="Wheels", description="Clear generated animation for wheels", default=True)
+    clear_steering: bpy.props.BoolProperty(name="Steering", description="Clear generated animation for steering",
+                                           default=True)
+    clear_wheels: bpy.props.BoolProperty(name="Wheels", description="Clear generated animation for wheels",
+                                         default=True)
 
     def draw(self, context):
         self.layout.use_property_decorate = False

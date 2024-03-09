@@ -126,13 +126,13 @@ def dispatch_bones_to_armature_layers(ob):
     mch_bone_layer = amt.collections.new(name=MCH_BONE_LAYER)  # 31
     mch_bone_extension_layer = amt.collections.new(name=MCH_BONE_EXTENSION_LAYER)  # 14
 
-    # set visiblity
+    # set visibility
     custom_shape_layer.is_visible = False
     def_bone_layer.is_visible = False
     mch_bone_extension_layer.is_visible = False
     mch_bone_layer.is_visible = False
 
-    # get mch bone
+    # get MCH bone
     re_mch_bone = re.compile(r'^MCH-Wheel(Brake)?\.(Ft|Bk)\.[LR](\.\d+)?$')
 
     for b in ob.data.bones:
@@ -156,7 +156,7 @@ def dispatch_bones_to_armature_layers(ob):
                 default_visible_layer.assign(ob.data.bones[b.name])
                 # ob.data.bones[b.name].layers[CUSTOM_SHAPE_LAYER] = True
 
-    # remove custome shape from default layer
+    # Remove custom shape from default layer
     for bone in custom_shape_layer.bones:
         default_visible_layer.unassign(bone)
 
@@ -459,8 +459,6 @@ def generate_constraint_on_wheel_brake_bone(wheel_brake_pose_bone, wheel_pose_bo
         for bone in group.bones:
             if bone.name == wheel_pose_bone.anme:
                 group.assign(wheel_brake_pose_bone)
-    # wheel_brake_pose_bone.bone_group = wheel_pose_bone.bone_group
-    # wheel_brake_pose_bone.bone.layers = wheel_pose_bone.bone.layers
 
     cns = wheel_brake_pose_bone.constraints.new('LIMIT_SCALE')
     cns.name = 'Brakes'
@@ -830,19 +828,19 @@ class ArmatureGenerator(object):
         root.bone.show_wire = True
 
         for ground_sensor_axle_name in ('GroundSensor.Axle.Ft', 'GroundSensor.Axle.Bk'):
-            groundsensor_axle = pose.bones.get(ground_sensor_axle_name)
-            if groundsensor_axle:
-                groundsensor_axle.lock_location = (True, True, False)
-                groundsensor_axle.lock_rotation = (True, True, True)
-                groundsensor_axle.lock_scale = (True, True, True)
-                groundsensor_axle.custom_shape = get_widget('WGT-CarRig.GroundSensor.Axle')
-                groundsensor_axle.lock_rotation_w = True
-                groundsensor_axle.custom_shape_transform = pose.bones['SHP-%s' % groundsensor_axle.name]
-                groundsensor_axle.bone.show_wire = True
-                self.generate_ground_projection_constraint(groundsensor_axle)
+            ground_sensor_axle = pose.bones.get(ground_sensor_axle_name)
+            if ground_sensor_axle:
+                ground_sensor_axle.lock_location = (True, True, False)
+                ground_sensor_axle.lock_rotation = (True, True, True)
+                ground_sensor_axle.lock_scale = (True, True, True)
+                ground_sensor_axle.custom_shape = get_widget('WGT-CarRig.GroundSensor.Axle')
+                ground_sensor_axle.lock_rotation_w = True
+                ground_sensor_axle.custom_shape_transform = pose.bones['SHP-%s' % ground_sensor_axle.name]
+                ground_sensor_axle.bone.show_wire = True
+                self.generate_ground_projection_constraint(ground_sensor_axle)
 
-                if groundsensor_axle.name == 'GroundSensor.Axle.Ft' and 'GroundSensor.Axle.Bk' in pose.bones:
-                    cns = groundsensor_axle.constraints.new('LIMIT_DISTANCE')
+                if ground_sensor_axle.name == 'GroundSensor.Axle.Ft' and 'GroundSensor.Axle.Bk' in pose.bones:
+                    cns = ground_sensor_axle.constraints.new('LIMIT_DISTANCE')
                     cns.name = 'Limit distance from Root'
                     cns.limit_mode = 'LIMITDIST_ONSURFACE'
                     cns.target = self.ob
@@ -1178,7 +1176,7 @@ class ArmatureGenerator(object):
         pose = self.ob.pose
         create_bone_group(pose, 'Direction', color_set='THEME04', bone_names=('Root', 'Drift', 'SHP-Root', 'SHP-Drift'))
         create_bone_group(pose, 'Suspension', color_set='THEME09', bone_names=(
-        'Suspension', 'WheelDamper.Ft.L', 'WheelDamper.Ft.R', 'WheelDamper.Bk.L', 'WheelDamper.Bk.R'))
+            'Suspension', 'WheelDamper.Ft.L', 'WheelDamper.Ft.R', 'WheelDamper.Bk.L', 'WheelDamper.Bk.R'))
 
         wheel_widgets = ('Steering',)
         for wheel_dimension in self.dimension.wheels_dimensions:
@@ -1187,7 +1185,7 @@ class ArmatureGenerator(object):
         create_bone_group(pose, 'Wheel', color_set='THEME03', bone_names=wheel_widgets)
 
         ground_sensor_names = (
-        'GroundSensor.Axle.Ft', 'GroundSensor.Axle.Bk', 'SHP-GroundSensor.Axle.Ft', 'SHP-GroundSensor.Axle.Bk')
+            'GroundSensor.Axle.Ft', 'GroundSensor.Axle.Bk', 'SHP-GroundSensor.Axle.Ft', 'SHP-GroundSensor.Axle.Bk')
         for wheel_dimension in self.dimension.wheels_dimensions:
             ground_sensor_names += tuple(wheel_dimension.names('GroundSensor'))
         ground_sensor_names += tuple("SHP-%s" % i for i in ground_sensor_names)
