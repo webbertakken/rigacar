@@ -147,7 +147,7 @@ def fix_old_steering_rotation(rig_object):
 
 def serialize_bake_options():
     # For older versions than 4.1
-    if (4, 1, 0) < bpy.app.version:
+    if bpy.app.version < (4, 1, 0):
         return dict(
             only_selected=True,
             do_pose=True,
