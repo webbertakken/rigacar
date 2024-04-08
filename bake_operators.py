@@ -145,6 +145,33 @@ def fix_old_steering_rotation(rig_object):
             rig_object.pose.bones['MCH-Steering.rotation'].rotation_mode = 'QUATERNION'
 
 
+def serialize_bake_options():
+    # For older versions than 4.1
+    if (4, 1, 0) < bpy.app.version:
+        return dict(
+            only_selected=True,
+            do_pose=True,
+            do_object=False,
+            do_visual_keying=True
+        )
+    # For latest versions
+    return dict(bake_options=bpy_extras.anim_utils.BakeOptions(
+            only_selected=True,
+            do_pose=True,
+            do_object=False,
+            do_visual_keying=True,
+            do_constraint_clear=False,
+            do_parents_clear=False,
+            do_clean=False,
+            do_location=True,
+            do_scale=True,
+            do_rotation=True,
+            do_bbone=True,
+            do_custom_props=True
+        )
+    )
+
+
 class BakingOperator(object):
     frame_start: bpy.props.IntProperty(name='Start Frame', min=1)
     frame_end: bpy.props.IntProperty(name='End Frame', min=1)
@@ -212,14 +239,12 @@ class BakingOperator(object):
             source_bones_matrix_basis.append(context.object.pose.bones[source_bone.name].matrix_basis.copy())
             source_bone.select = True
 
+        bake_options = serialize_bake_options()
         baked_action = bpy_extras.anim_utils.bake_action(
             context.object,
             action=None,
             frames=range(self.frame_start, self.frame_end + 1),
-            only_selected=True,
-            do_pose=True,
-            do_object=False,
-            do_visual_keying=True,
+            **bake_options
         )
 
         # restoring context
