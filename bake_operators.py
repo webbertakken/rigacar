@@ -76,20 +76,60 @@ def find_wheelbrake_bone(bones, position, side, index):
     return bones.get(backward_compatible_bone_name)
 
 
+def _selectable_bone(obj, bone):
+    """Blender 5 keeps bone selection on the pose bone; earlier versions keep it on the bone."""
+    pose_bone = obj.pose.bones[bone.name]
+    return pose_bone if hasattr(pose_bone, 'select') else bone
+
+
+def is_bone_selected(obj, bone):
+    return _selectable_bone(obj, bone).select
+
+
+def set_bone_selected(obj, bone, selected):
+    _selectable_bone(obj, bone).select = selected
+
+
+def action_fcurves(action, slot=None):
+    """F-curves of an action. Slotted actions (Blender 4.4+) keep them per slot; defaults to the first slot."""
+    if not hasattr(action, 'slots'):
+        return action.fcurves
+    if slot is None:
+        slot = action.slots[0] if action.slots else None
+    if slot is None:
+        return None
+    channelbag = bpy_extras.anim_utils.action_get_channelbag_for_slot(action, slot)
+    return channelbag.fcurves if channelbag is not None else None
+
+
+def find_fcurves(action, data_path, count):
+    fcurves = action_fcurves(action)
+    return [fcurves.find(data_path, index=i) if fcurves is not None else None for i in range(count)]
+
+
 def clear_property_animation(context, property_name, remove_keyframes=True):
-    if remove_keyframes and context.object.animation_data and context.object.animation_data.action:
+    animation_data = context.object.animation_data
+    if remove_keyframes and animation_data and animation_data.action:
         fcurve_datapath = '["%s"]' % property_name
-        action = context.object.animation_data.action
-        fcurve = action.fcurves.find(fcurve_datapath)
+        fcurves = action_fcurves(animation_data.action, getattr(animation_data, 'action_slot', None))
+        fcurve = fcurves.find(fcurve_datapath) if fcurves is not None else None
         if fcurve is not None:
-            action.fcurves.remove(fcurve)
+            fcurves.remove(fcurve)
     context.object[property_name] = .0
 
 
 def create_property_animation(context, property_name):
-    action = context.object.animation_data.action
+    obj = context.object
+    action = obj.animation_data.action
     fcurve_datapath = '["%s"]' % property_name
-    return action.fcurves.new(fcurve_datapath, index=0, action_group='Wheels rotation')
+    group_name = 'Wheels rotation'
+    if not hasattr(action, 'slots'):
+        return action.fcurves.new(fcurve_datapath, index=0, action_group=group_name)
+
+    fcurve = action.fcurve_ensure_for_datablock(obj, fcurve_datapath, index=0)
+    channelbag = bpy_extras.anim_utils.action_get_channelbag_for_slot(action, obj.animation_data.action_slot)
+    fcurve.group = channelbag.groups.get(group_name) or channelbag.groups.new(group_name)
+    return fcurve
 
 
 class FCurvesEvaluator(object):
@@ -204,22 +244,22 @@ class BakingOperator(object):
 
     def _create_euler_evaluator(self, action, source_bone):
         fcurve_name = 'pose.bones["%s"].rotation_euler' % source_bone.name
-        fc_root_rot = [action.fcurves.find(fcurve_name, index=i) for i in range(3)]
+        fc_root_rot = find_fcurves(action, fcurve_name, 3)
         return EulerToQuaternionFCurvesEvaluator(FCurvesEvaluator(fc_root_rot, default_value=(.0, .0, .0)))
 
     def _create_quaternion_evaluator(self, action, source_bone):
         fcurve_name = 'pose.bones["%s"].rotation_quaternion' % source_bone.name
-        fc_root_rot = [action.fcurves.find(fcurve_name, index=i) for i in range(4)]
+        fc_root_rot = find_fcurves(action, fcurve_name, 4)
         return QuaternionFCurvesEvaluator(FCurvesEvaluator(fc_root_rot, default_value=(1.0, .0, .0, .0)))
 
     def _create_location_evaluator(self, action, source_bone):
         fcurve_name = 'pose.bones["%s"].location' % source_bone.name
-        fc_root_loc = [action.fcurves.find(fcurve_name, index=i) for i in range(3)]
+        fc_root_loc = find_fcurves(action, fcurve_name, 3)
         return VectorFCurvesEvaluator(FCurvesEvaluator(fc_root_loc, default_value=(.0, .0, .0)))
 
     def _create_scale_evaluator(self, action, source_bone):
         fcurve_name = 'pose.bones["%s"].scale' % source_bone.name
-        fc_root_loc = [action.fcurves.find(fcurve_name, index=i) for i in range(3)]
+        fc_root_loc = find_fcurves(action, fcurve_name, 3)
         return VectorFCurvesEvaluator(FCurvesEvaluator(fc_root_loc, default_value=(1.0, 1.0, 1.0)))
 
     def _bake_action(self, context, *source_bones):
@@ -228,16 +268,17 @@ class BakingOperator(object):
                                                                                  'use_tweak_mode') else False
 
         # saving context
-        selected_bones = [b for b in context.object.data.bones if b.select]
-        mode = context.object.mode
+        obj = context.object
+        selected_bones = [b for b in obj.data.bones if is_bone_selected(obj, b)]
+        mode = obj.mode
         for b in selected_bones:
-            b.select = False
+            set_bone_selected(obj, b, False)
 
         bpy.ops.object.mode_set(mode='OBJECT')
         source_bones_matrix_basis = []
         for source_bone in source_bones:
             source_bones_matrix_basis.append(context.object.pose.bones[source_bone.name].matrix_basis.copy())
-            source_bone.select = True
+            set_bone_selected(obj, source_bone, True)
 
         bake_options = serialize_bake_options()
         baked_action = bpy_extras.anim_utils.bake_action(
@@ -250,9 +291,9 @@ class BakingOperator(object):
         # restoring context
         for source_bone, matrix_basis in zip(source_bones, source_bones_matrix_basis):
             context.object.pose.bones[source_bone.name].matrix_basis = matrix_basis
-            source_bone.select = False
+            set_bone_selected(obj, source_bone, False)
         for b in selected_bones:
-            b.select = True
+            set_bone_selected(obj, b, True)
 
         bpy.ops.object.mode_set(mode=mode)
 
