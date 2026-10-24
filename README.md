@@ -54,6 +54,14 @@ tests/matrix.sh ~/Applications/blender-*/blender
 
 It builds a car, rigs it, checks the controls drive it, adds brakes, bakes wheels and steering (also along a Follow Path), and clears them. It also rigs a scaled, parented car away from the 3D cursor. It exits non-zero when a check fails.
 
+It also rigs a real model, Kenney's CC0 sports sedan in `tests/fixtures`, and checks its wheels spin in place.
+
+To capture the rigged sedan for documentation or a pull request:
+
+```bash
+xvfb-run -a blender --factory-startup --python tests/screenshot.py -- out.png --steer
+```
+
 Upstream readme description below.
 
 ## Upstream

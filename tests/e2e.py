@@ -11,6 +11,7 @@ import tempfile
 import traceback
 
 import bpy
+import mathutils
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ADDON_NAME = 'rigacar'
@@ -62,6 +63,26 @@ def add_wheel(name, location, scale=1.0):
     obj.name = name
     obj.scale = (scale, scale, scale)
     return obj
+
+
+KENNEY_NAMES = {'body': 'Body', 'wheel-front-left': 'Wheel.Ft.L', 'wheel-front-right': 'Wheel.Ft.R',
+                'wheel-back-left': 'Wheel.Bk.L', 'wheel-back-right': 'Wheel.Bk.R'}
+
+
+def import_sedan():
+    """Kenney's CC0 sports sedan (tests/fixtures), with its parts renamed for Rigacar."""
+    bpy.ops.import_scene.gltf(filepath=os.path.join(REPO, 'tests', 'fixtures', 'sedan-sports.glb'))
+    for old, new in KENNEY_NAMES.items():
+        bpy.data.objects[old].name = new
+    bpy.context.view_layer.update()
+    body = bpy.data.objects['Body']
+    wheels = [bpy.data.objects[name] for name in ('Wheel.Ft.L', 'Wheel.Ft.R', 'Wheel.Bk.L', 'Wheel.Bk.R')]
+    return body, wheels
+
+
+def bounds_centre(obj):
+    xyz = sys.modules[ADDON_NAME].car_rig.object_bounds_xyz(obj)
+    return mathutils.Vector(((xyz[0] + xyz[1]) / 2, (xyz[2] + xyz[3]) / 2, (xyz[4] + xyz[5]) / 2))
 
 
 def parent_keeping_transform(child, parent):
@@ -454,6 +475,40 @@ def test_bake_along_an_animated_path():
     check(turned > 30, f'animated path: wheels roll along the path: {turned:.1f} rad')
 
 
+def test_real_model_rigs_and_rolls():
+    reset_scene()
+    for image in list(bpy.data.images):
+        bpy.data.images.remove(image)
+    body, wheels = import_sedan()
+    parts = [body, *wheels]
+    before = world_bounds(parts)
+    select_only(parts, body)
+    invoke_in_viewport(bpy.ops.object.armature_car_deformation_rig)
+    rig = bpy.context.object
+    check(all(o.parent == rig for o in parts), 'real model: every part follows the rig')
+    check(bpy.ops.pose.car_animation_rig_generate() == {'FINISHED'}, 'real model: animation rig generated')
+    layer = bpy.context.view_layer
+    layer.update()
+    check(max_bounds_delta(before, world_bounds(parts)) < SETTLE, 'real model: stays in place when rigged')
+
+    # The wheels' origins sit inboard of their centres; each must still spin about its own centre.
+    centre = bounds_centre(wheels[2])
+    orientation = wheels[2].matrix_world.to_quaternion()
+    rig['Wheel.rotation.Bk.L'] = 1.0
+    rig.update_tag()
+    layer.update()
+    spun = orientation.rotation_difference(wheels[2].matrix_world.to_quaternion()).angle
+    drift = (bounds_centre(wheels[2]) - centre).length
+    check(abs(spun - 1) < 1e-3 and drift < 1e-3, f'real model: a wheel spins in place: {spun:.3f} rad, centre moved {drift:.4f}')
+    rig['Wheel.rotation.Bk.L'] = 0.0
+
+    root = rig.pose.bones['Root']
+    start = body.matrix_world.translation.copy()
+    root.location = (0, 1, 0)
+    layer.update()
+    check(abs((body.matrix_world.translation - start).length - 1) < 1e-3, 'real model: moving Root carries the body')
+
+
 def test_polls_without_a_rig():
     reset_scene()
     addon = sys.modules[ADDON_NAME]
@@ -503,7 +558,7 @@ def main():
                  test_hidden_collection_still_rigs, test_edit_mode_failure_is_reported,
                  test_full_pipeline, test_rig_drives_model, test_bake_along_follow_path_keeps_keyframes,
                  test_bake_explains_an_animated_armature_object, test_default_bake_frame_range,
-                 test_bake_along_an_animated_path, test_polls_without_a_rig,
+                 test_bake_along_an_animated_path, test_real_model_rigs_and_rolls, test_polls_without_a_rig,
                  test_scaled_parented_model_rigs_like_plain):
         try:
             with viewport():
@@ -515,7 +570,8 @@ def main():
     os._exit(1 if failures else 0)
 
 
-if bpy.app.background:
-    print('[e2e] FAIL needs a window: run under xvfb-run without --background', flush=True)
-    os._exit(2)
-bpy.app.timers.register(main, first_interval=.5)
+if __name__ == '__main__':
+    if bpy.app.background:
+        print('[e2e] FAIL needs a window: run under xvfb-run without --background', flush=True)
+        os._exit(2)
+    bpy.app.timers.register(main, first_interval=.5)
