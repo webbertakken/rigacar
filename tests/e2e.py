@@ -396,6 +396,64 @@ def test_bake_explains_an_animated_armature_object():
     check(fcurves is not None and fcurves.find('location', index=1) is not None, 'armature keyframes are kept')
 
 
+def test_default_bake_frame_range():
+    reset_scene()
+    bake_operators = sys.modules[ADDON_NAME].bake_operators
+    body, _, wheels, brake = build_car()
+    rig = rig_car(body, wheels, brake)
+    scene = bpy.context.scene
+    scene.frame_start, scene.frame_end = 10, 60
+    check(bake_operators.default_bake_frame_range(rig, scene) == (10, 60),
+          f'no animation: the scene range: {bake_operators.default_bake_frame_range(rig, scene)}')
+
+    rig.animation_data_create()
+    rig.animation_data.action = bpy.data.actions.new('Empty')
+    check(bake_operators.default_bake_frame_range(rig, scene) == (10, 60),
+          f'an action without keys: the scene range: {bake_operators.default_bake_frame_range(rig, scene)}')
+
+    root = rig.pose.bones['Root']
+    for frame in (5, 30):
+        root.location.y = -frame / 10
+        root.keyframe_insert('location', frame=frame)
+    check(bake_operators.default_bake_frame_range(rig, scene) == (5, 30),
+          f'keyed Root: the action range: {bake_operators.default_bake_frame_range(rig, scene)}')
+
+
+def test_bake_along_an_animated_path():
+    reset_scene()
+    bake_operators = sys.modules[ADDON_NAME].bake_operators
+    body, _, wheels, brake = build_car()
+    rig = rig_car(body, wheels, brake)
+    bpy.ops.object.mode_set(mode='OBJECT')
+    bpy.ops.curve.primitive_bezier_circle_add(radius=8, location=(8, 0, 0))
+    path = bpy.context.object
+    path.select_set(False)
+    rig.select_set(True)
+    bpy.context.view_layer.objects.active = rig
+    scene = bpy.context.scene
+    scene.frame_start, scene.frame_end = 1, 48
+
+    # Follow Path's Animate Path keys the curve's evaluation time; the rig itself has no keys.
+    cns = rig.pose.bones['Root'].constraints.new('FOLLOW_PATH')
+    cns.target = path
+    cns.use_curve_follow = True
+    cns.forward_axis = 'TRACK_NEGATIVE_Y'
+    path.data.use_path = True
+    path.data.path_duration = 48
+    for frame, time in ((1, 0.0), (48, 12.0)):
+        path.data.eval_time = time
+        path.data.keyframe_insert('eval_time', frame=frame)
+
+    frame_start, frame_end = bake_operators.default_bake_frame_range(rig, scene)
+    check((frame_start, frame_end) == (1, 48), f'animated path: the dialog offers the scene range: {frame_start}-{frame_end}')
+    result = bpy.ops.anim.car_wheels_rotation_bake('EXEC_DEFAULT', frame_start=frame_start, frame_end=frame_end)
+    check(result == {'FINISHED'}, f'animated path: wheels baked: {result}')
+    scene.frame_set(48)
+    # A quarter of the way round a circle of radius 8 is about 12.6 units, over wheels of radius .35.
+    turned = abs(rig.get('Wheel.rotation.Ft.L', 0))
+    check(turned > 30, f'animated path: wheels roll along the path: {turned:.1f} rad')
+
+
 def test_polls_without_a_rig():
     reset_scene()
     addon = sys.modules[ADDON_NAME]
@@ -444,14 +502,15 @@ def main():
     for test in (lambda: test_bounds(rigacar.car_rig), test_deformation_rig_without_invoke,
                  test_hidden_collection_still_rigs, test_edit_mode_failure_is_reported,
                  test_full_pipeline, test_rig_drives_model, test_bake_along_follow_path_keeps_keyframes,
-                 test_bake_explains_an_animated_armature_object, test_polls_without_a_rig,
+                 test_bake_explains_an_animated_armature_object, test_default_bake_frame_range,
+                 test_bake_along_an_animated_path, test_polls_without_a_rig,
                  test_scaled_parented_model_rigs_like_plain):
         try:
             with viewport():
                 test()
         except Exception:
             traceback.print_exc()
-            failures.append(f'exception in {test}')
+            check(False, f'{getattr(test, "__name__", test)} raised; see the traceback above')
     print(f'[e2e] {len(failures)} failure(s)', flush=True)
     os._exit(1 if failures else 0)
 

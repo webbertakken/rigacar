@@ -5,7 +5,7 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 status=0
 for blender in "$@"; do
-  log=$(mktemp)
+  log=$(mktemp -t rigacar-e2e.XXXXXX)
   timeout 300 xvfb-run -a "$blender" --factory-startup --python tests/e2e.py > "$log" 2>&1
   rc=$?
   echo "$(grep -m1 '\[e2e\] Blender' "$log" | cut -c7-): $(grep -c '\[e2e\] PASS' "$log") passed, rc=$rc"
