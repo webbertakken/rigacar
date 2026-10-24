@@ -375,6 +375,27 @@ def test_bake_along_follow_path_keeps_keyframes():
     check(min(steering) > .01, f'follow path: steering holds the turn: min {min(steering):.3f}')
 
 
+def test_bake_explains_an_animated_armature_object():
+    reset_scene()
+    body, _, wheels, brake = build_car()
+    rig = rig_car(body, wheels, brake)
+    bpy.ops.object.mode_set(mode='OBJECT')
+    rig.location = (0, 0, 0)
+    rig.keyframe_insert('location', frame=1)
+    rig.location = (0, -10, 0)
+    rig.keyframe_insert('location', frame=24)
+    for operator in (bpy.ops.anim.car_wheels_rotation_bake, bpy.ops.anim.car_steering_bake):
+        try:
+            result = operator('EXEC_DEFAULT', frame_start=1, frame_end=24)
+            check(False, f'{operator.idname_py()} explains an animated armature object: {result}')
+        except RuntimeError as error:
+            check('Root bone' in str(error), f'{operator.idname_py()} explains: {str(error).splitlines()[0]}')
+    animation_data = rig.animation_data
+    fcurves = sys.modules[ADDON_NAME].bake_operators.action_fcurves(animation_data.action,
+                                                                     getattr(animation_data, 'action_slot', None))
+    check(fcurves is not None and fcurves.find('location', index=1) is not None, 'armature keyframes are kept')
+
+
 def test_polls_without_a_rig():
     reset_scene()
     addon = sys.modules[ADDON_NAME]
@@ -423,7 +444,8 @@ def main():
     for test in (lambda: test_bounds(rigacar.car_rig), test_deformation_rig_without_invoke,
                  test_hidden_collection_still_rigs, test_edit_mode_failure_is_reported,
                  test_full_pipeline, test_rig_drives_model, test_bake_along_follow_path_keeps_keyframes,
-                 test_polls_without_a_rig, test_scaled_parented_model_rigs_like_plain):
+                 test_bake_explains_an_animated_armature_object, test_polls_without_a_rig,
+                 test_scaled_parented_model_rigs_like_plain):
         try:
             with viewport():
                 test()

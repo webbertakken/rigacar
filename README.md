@@ -28,6 +28,7 @@ _This fork keeps Rigacar working on current Blender and consolidates fixes from 
 - The body bone is sized from the body's true bounds, including collection instances and parented children.
 - Rigging keeps the car where it is: parented or scaled parts, a 3D cursor away from the origin, and _Move origin_ no longer shift it.
 - Operators stay quietly unavailable, instead of raising errors, when no car rig is active.
+- Baking explains itself when only the armature object moves, instead of silently baking nothing.
 
 ### Troubleshooting
 
