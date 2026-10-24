@@ -54,7 +54,7 @@ def create_constraint_influence_driver(ob, cns, driver_data_path, base_influence
     targ.data_path = driver_data_path
 
     if base_influence != 1.0:
-        fmod = fcurve.modifiers[0] if fcurve.modifiers else fcurve.modifiers.new('GENERATOR')
+        fmod = next((m for m in fcurve.modifiers if m.type == 'GENERATOR'), None) or fcurve.modifiers.new('GENERATOR')
         fmod.mode = 'POLYNOMIAL'
         fmod.poly_order = 1
         fmod.coefficients = (0, base_influence)
