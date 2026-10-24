@@ -54,7 +54,7 @@ def create_constraint_influence_driver(ob, cns, driver_data_path, base_influence
     targ.data_path = driver_data_path
 
     if base_influence != 1.0:
-        fmod = fcurve.modifiers[0]
+        fmod = fcurve.modifiers[0] if fcurve.modifiers else fcurve.modifiers.new('GENERATOR')
         fmod.mode = 'POLYNOMIAL'
         fmod.poly_order = 1
         fmod.coefficients = (0, base_influence)
@@ -110,6 +110,67 @@ def get_widget(name):
         widgets.create()
         widget = bpy.data.objects.get(name)
     return widget
+
+
+def extend_bounds_xyz_with_box(xyz, bound_box, matrix_world):
+    for p in bound_box:
+        world_p = matrix_world @ mathutils.Vector(p)
+        xyz[0] = min(world_p.x, xyz[0])
+        xyz[1] = max(world_p.x, xyz[1])
+        xyz[2] = min(world_p.y, xyz[2])
+        xyz[3] = max(world_p.y, xyz[3])
+        xyz[4] = min(world_p.z, xyz[4])
+        xyz[5] = max(world_p.z, xyz[5])
+
+
+def extend_bounds_xyz_from_collection_instance(xyz, obj):
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    found = False
+    for inst in depsgraph.object_instances:
+        if not inst.is_instance:
+            continue
+
+        parent = getattr(inst, 'parent', None)
+        parent_original = getattr(parent, 'original', None)
+        if parent_original != obj:
+            continue
+
+        inst_object = getattr(inst, 'object', None)
+        if inst_object is None or inst_object.type == 'EMPTY' or not inst_object.bound_box:
+            continue
+
+        extend_bounds_xyz_with_box(xyz, inst_object.bound_box, inst.matrix_world.copy())
+        found = True
+
+    return found
+
+
+def extend_bounds_xyz(xyz, obj, parent_matrix=None, recurse_children=True):
+    if parent_matrix is None:
+        parent_matrix = mathutils.Matrix.Identity(4)
+
+    omatrix = parent_matrix @ obj.matrix_world
+    if obj.instance_type == 'COLLECTION' and obj.instance_collection is not None:
+        if extend_bounds_xyz_from_collection_instance(xyz, obj):
+            return
+        for inst_obj in obj.instance_collection.all_objects:
+            extend_bounds_xyz(xyz, inst_obj, omatrix, recurse_children=False)
+        return
+
+    if obj.type != 'EMPTY' and obj.bound_box:
+        extend_bounds_xyz_with_box(xyz, obj.bound_box, omatrix)
+
+    if recurse_children:
+        # A child's matrix_world already includes its parent's transform.
+        for child in obj.children:
+            extend_bounds_xyz(xyz, child, parent_matrix)
+
+
+def object_bounds_xyz(*objs):
+    xyz = [inf, -inf, inf, -inf, inf, -inf]
+    for obj in objs:
+        extend_bounds_xyz(xyz, obj)
+    return xyz if xyz[0] != inf else None
 
 
 def define_custom_property(target, name, value, description=None, overridable=True):
@@ -197,28 +258,10 @@ class BoundingBox(object):
         objs = [o for o in armature.children if o.parent_bone == bone_name]
         bone = armature.data.bones[bone_name]
         self.__center = bone.head.copy()
-        if not objs:
+        self.__xyz = object_bounds_xyz(*objs) if objs else None
+        if self.__xyz is None:
             self.__xyz = [bone.head.x - bone.length / 2, bone.head.x + bone.length / 2, bone.head.y - bone.length,
                           bone.head.y + bone.length, .0, bone.head.z * 2]
-        else:
-            self.__xyz = [inf, -inf, inf, -inf, inf, -inf]
-            self.__compute(mathutils.Matrix(), *objs)
-
-    def __compute(self, pmatrix, *objs):
-        for obj in objs:
-            omatrix = pmatrix @ obj.matrix_world
-            if obj.instance_type == 'COLLECTION':
-                self.__compute(omatrix, *obj.instance_collection.all_objects)
-            elif obj.bound_box:
-                for p in obj.bound_box:
-                    world_p = omatrix @ mathutils.Vector(p)
-                    self.__xyz[0] = min(world_p.x, self.__xyz[0])
-                    self.__xyz[1] = max(world_p.x, self.__xyz[1])
-                    self.__xyz[2] = min(world_p.y, self.__xyz[2])
-                    self.__xyz[3] = max(world_p.y, self.__xyz[3])
-                    self.__xyz[4] = min(world_p.z, self.__xyz[4])
-                    self.__xyz[5] = max(world_p.z, self.__xyz[5])
-            self.__compute(pmatrix, *obj.children)
 
     @property
     def center(self):
@@ -457,8 +500,8 @@ def generate_constraint_on_wheel_brake_bone(wheel_brake_pose_bone, wheel_pose_bo
     groups = amt.collections
     for group in groups:
         for bone in group.bones:
-            if bone.name == wheel_pose_bone.anme:
-                group.assign(wheel_brake_pose_bone)
+            if bone.name == wheel_pose_bone.name:
+                group.assign(wheel_brake_pose_bone.bone)
 
     cns = wheel_brake_pose_bone.constraints.new('LIMIT_SCALE')
     cns.name = 'Brakes'
@@ -476,6 +519,20 @@ def generate_constraint_on_wheel_brake_bone(wheel_brake_pose_bone, wheel_pose_bo
     cns.use_min_z = True
     cns.min_z = .5
     cns.max_z = 1.0
+
+
+def default_bones_position():
+    return {
+        'Body': mathutils.Vector((0.0, 0, .8)),
+        'Wheel.Ft.L': mathutils.Vector((0.9, -2, .5)),
+        'Wheel.Ft.R': mathutils.Vector((-.9, -2, .5)),
+        'Wheel.Bk.L': mathutils.Vector((0.9, 2, .5)),
+        'Wheel.Bk.R': mathutils.Vector((-.9, 2, .5)),
+        'WheelBrake.Ft.L': mathutils.Vector((0.8, -2, .5)),
+        'WheelBrake.Ft.R': mathutils.Vector((-.8, -2, .5)),
+        'WheelBrake.Bk.L': mathutils.Vector((0.8, 2, .5)),
+        'WheelBrake.Bk.R': mathutils.Vector((-.8, 2, .5))
+    }
 
 
 class ArmatureGenerator(object):
@@ -783,7 +840,6 @@ class ArmatureGenerator(object):
 
     def generate_constraints_on_rig(self):
         pose = self.ob.pose
-        amt = self.ob.data
 
         for b in pose.bones:
             if b.name.startswith('DEF-') or b.name.startswith('MCH-') or b.name.startswith('SHP-'):
@@ -1278,17 +1334,7 @@ class OBJECT_OT_armatureCarDeformationRig(bpy.types.Operator):
         layout.prop(self, 'back_wheel_brakes_pos_delta')
 
     def invoke(self, context, event):
-        self.bones_position = {
-            'Body': mathutils.Vector((0.0, 0, .8)),
-            'Wheel.Ft.L': mathutils.Vector((0.9, -2, .5)),
-            'Wheel.Ft.R': mathutils.Vector((-.9, -2, .5)),
-            'Wheel.Bk.L': mathutils.Vector((0.9, 2, .5)),
-            'Wheel.Bk.R': mathutils.Vector((-.9, 2, .5)),
-            'WheelBrake.Ft.L': mathutils.Vector((0.8, -2, .5)),
-            'WheelBrake.Ft.R': mathutils.Vector((-.8, -2, .5)),
-            'WheelBrake.Bk.L': mathutils.Vector((0.8, 2, .5)),
-            'WheelBrake.Bk.R': mathutils.Vector((-.8, 2, .5))
-        }
+        self.bones_position = default_bones_position()
         self.target_objects_name = {}
 
         has_body_target = self._find_target_object(context, 'Body')
@@ -1333,6 +1379,11 @@ class OBJECT_OT_armatureCarDeformationRig(bpy.types.Operator):
 
     def execute(self, context):
         """Creates the meta rig with basic bones"""
+        if not hasattr(self, 'bones_position'):
+            self.bones_position = default_bones_position()
+        if not hasattr(self, 'target_objects_name'):
+            self.target_objects_name = {}
+
         amt = bpy.data.armatures.new('Car Rig Data')
         amt['Car Rig'] = False
 
@@ -1342,7 +1393,7 @@ class OBJECT_OT_armatureCarDeformationRig(bpy.types.Operator):
         # Could be a better fix (steal code from other addons).
         try:
             bpy.ops.object.mode_set(mode='EDIT')
-        except TypeError:
+        except (TypeError, RuntimeError):
             self.report({'ERROR'},
                         "Cannot edit the new armature! Please make sure the active collection is visible and editable")
             return {'CANCELLED'}
@@ -1388,8 +1439,9 @@ class OBJECT_OT_armatureCarDeformationRig(bpy.types.Operator):
             target_obj = bpy.context.scene.objects[target_obj_name]
             if name == 'Body':
                 b.tail = b.head
-                b.tail.y += target_obj.dimensions[1] / 2 if target_obj.dimensions and target_obj.dimensions[
-                    0] != 0 else 1
+                body_bounds = object_bounds_xyz(target_obj)
+                body_length = body_bounds[3] - body_bounds[2] if body_bounds is not None else target_obj.dimensions[1]
+                b.tail.y += body_length / 2 if body_length != 0 else 1
             target_obj.parent = rig
             target_obj.parent_bone = b.name
             target_obj.parent_type = 'BONE'
