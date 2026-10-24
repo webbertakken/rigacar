@@ -1501,9 +1501,8 @@ class POSE_OT_carAnimationAddBrakeWheelBones(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        return context.object.mode == 'POSE' and \
-            context.object is not None and context.object.data is not None and \
-            context.object.data.get('Car Rig')
+        obj = context.object
+        return bool(obj is not None and obj.data is not None and obj.mode == 'POSE' and obj.data.get('Car Rig'))
 
     def execute(self, context):
         mode = context.object.mode
