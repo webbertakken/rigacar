@@ -219,9 +219,9 @@ class BakingOperator(object):
 
     @classmethod
     def poll(cls, context):
-        return ('Car Rig' in context.object.data and
-                context.object.data['Car Rig'] and
-                context.object.mode in ('POSE', 'OBJECT'))
+        obj = context.object
+        return bool(obj is not None and obj.data is not None and obj.data.get('Car Rig') and
+                    obj.mode in ('POSE', 'OBJECT'))
 
     def invoke(self, context, event):
         if context.object.animation_data is None:
@@ -241,6 +241,25 @@ class BakingOperator(object):
         self.layout.prop(self, 'frame_start')
         self.layout.prop(self, 'frame_end')
         self.layout.prop(self, 'keyframe_tolerance')
+
+    def _only_armature_object_moves(self, context):
+        """Baking follows the Root bone; reports when only the armature object is animated or constrained."""
+        obj = context.object
+        animation_data = obj.animation_data
+        fcurves = action_fcurves(animation_data.action, getattr(animation_data, 'action_slot', None)) \
+            if animation_data and animation_data.action else None
+        data_paths = [fc.data_path for fc in fcurves] if fcurves is not None else []
+        root = obj.pose.bones.get('Root')
+        root_moves = (root is not None and len(root.constraints) > 0) or \
+            any(path.startswith('pose.bones["Root"]') for path in data_paths)
+        object_moves = len(obj.constraints) > 0 or \
+            any(path in ('location', 'rotation_euler', 'rotation_quaternion') or path.startswith('constraints[')
+                for path in data_paths)
+        if object_moves and not root_moves:
+            self.report({'ERROR'}, 'Baking follows the Root bone, but only the armature object moves. '
+                                   'Animate the Root bone in Pose mode, or put the Follow Path constraint on it.')
+            return True
+        return False
 
     def _create_euler_evaluator(self, action, source_bone):
         fcurve_name = 'pose.bones["%s"].rotation_euler' % source_bone.name
@@ -312,6 +331,8 @@ class ANIM_OT_carWheelsRotationBake(bpy.types.Operator, BakingOperator):
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
+        if self._only_armature_object_moves(context):
+            return {'CANCELLED'}
         context.object['wheels_on_y_axis'] = False
         self._bake_wheels_rotation(context)
         return {'FINISHED'}
@@ -404,6 +425,8 @@ class ANIM_OT_carSteeringBake(bpy.types.Operator, BakingOperator):
         self.layout.prop(self, 'keyframe_tolerance')
 
     def execute(self, context):
+        if self._only_armature_object_moves(context):
+            return {'CANCELLED'}
         if self.frame_end > self.frame_start:
             if 'Steering' in context.object.data.bones and 'MCH-Steering.rotation' in context.object.data.bones:
                 steering = context.object.data.bones['Steering']

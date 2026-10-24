@@ -54,7 +54,7 @@ def create_constraint_influence_driver(ob, cns, driver_data_path, base_influence
     targ.data_path = driver_data_path
 
     if base_influence != 1.0:
-        fmod = fcurve.modifiers[0] if fcurve.modifiers else fcurve.modifiers.new('GENERATOR')
+        fmod = next((m for m in fcurve.modifiers if m.type == 'GENERATOR'), None) or fcurve.modifiers.new('GENERATOR')
         fmod.mode = 'POLYNOMIAL'
         fmod.poly_order = 1
         fmod.coefficients = (0, base_influence)
@@ -1248,16 +1248,15 @@ class ArmatureGenerator(object):
         create_bone_group(pose, 'GroundSensor', color_set='THEME02', bone_names=ground_sensor_names)
 
     def set_origin(self, scene):
-        object_location = self.ob.location[:]
+        """Moves the armature's origin onto the Root bone; the armature and the car stay in place."""
         root = self.ob.data.bones.get('Root')
         if root:
             cursor_location = scene.cursor.location[:]
-            scene.cursor.location = root.head
+            scene.cursor.location = self.ob.matrix_basis @ root.head_local
             try:
                 bpy.ops.object.origin_set(type='ORIGIN_CURSOR')
             finally:
                 scene.cursor.location = cursor_location
-                self.ob.location = object_location
 
 
 class OBJECT_OT_armatureCarDeformationRig(bpy.types.Operator):
@@ -1373,7 +1372,7 @@ class OBJECT_OT_armatureCarDeformationRig(bpy.types.Operator):
         for obj in context.selected_objects:
             if pattern.match(obj.name):
                 self.target_objects_name[name] = obj.name
-                self.bones_position[name] = obj.location.copy()
+                self.bones_position[name] = obj.matrix_world.translation.copy()
                 return True
         return False
 
@@ -1397,6 +1396,11 @@ class OBJECT_OT_armatureCarDeformationRig(bpy.types.Operator):
             self.report({'ERROR'},
                         "Cannot edit the new armature! Please make sure the active collection is visible and editable")
             return {'CANCELLED'}
+
+        # Target positions are in world space; bones are placed in the rig's space.
+        world_to_rig = rig.matrix_world.inverted()
+        for name in self.target_objects_name:
+            self.bones_position[name] = world_to_rig @ self.bones_position[name]
 
         self._create_bone(rig, 'Body', delta_pos=self.body_pos_delta)
 
@@ -1442,11 +1446,13 @@ class OBJECT_OT_armatureCarDeformationRig(bpy.types.Operator):
                 body_bounds = object_bounds_xyz(target_obj)
                 body_length = body_bounds[3] - body_bounds[2] if body_bounds is not None else target_obj.dimensions[1]
                 b.tail.y += body_length / 2 if body_length != 0 else 1
+            world = target_obj.matrix_world.copy()
             target_obj.parent = rig
             target_obj.parent_bone = b.name
             target_obj.parent_type = 'BONE'
-            target_obj.location += rig.matrix_world.to_translation()
             target_obj.matrix_parent_inverse = (rig.matrix_world @ mathutils.Matrix.Translation(b.tail)).inverted()
+            # The inverse cancels the bone's rest transform, so the object keeps its place in the world.
+            target_obj.matrix_basis = world
 
         return b
 
@@ -1501,9 +1507,8 @@ class POSE_OT_carAnimationAddBrakeWheelBones(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        return context.object.mode == 'POSE' and \
-            context.object is not None and context.object.data is not None and \
-            context.object.data.get('Car Rig')
+        obj = context.object
+        return bool(obj is not None and obj.data is not None and obj.mode == 'POSE' and obj.data.get('Car Rig'))
 
     def execute(self, context):
         mode = context.object.mode
