@@ -1,0 +1,274 @@
+"""End-to-end check of the add-on inside Blender.
+
+Operators only run their invoke step with a window, so run Blender with a UI,
+under a virtual display when headless, from the repository root:
+    xvfb-run -a blender --factory-startup --python tests/e2e.py
+Exits non-zero when any check fails.
+"""
+import os
+import sys
+import tempfile
+import traceback
+
+import bpy
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ADDON_NAME = 'rigacar'
+
+failures = []
+
+
+def check(condition, message):
+    status = 'PASS' if condition else 'FAIL'
+    print(f'[e2e] {status} {message}', flush=True)
+    if not condition:
+        failures.append(message)
+
+
+def import_addon():
+    link_dir = tempfile.mkdtemp(prefix='rigacar-e2e-')
+    os.symlink(REPO, os.path.join(link_dir, ADDON_NAME))
+    sys.path.insert(0, link_dir)
+    import rigacar
+    rigacar.register()
+    return rigacar
+
+
+def reset_scene():
+    if bpy.context.object and bpy.context.object.mode != 'OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
+    for collection in (bpy.data.objects, bpy.data.collections, bpy.data.armatures, bpy.data.meshes,
+                       bpy.data.actions):
+        for datablock in list(collection):
+            collection.remove(datablock)
+    view_layer = bpy.context.view_layer
+    view_layer.active_layer_collection = view_layer.layer_collection
+
+
+def add_cube(name, location, scale=(1, 1, 1)):
+    bpy.ops.mesh.primitive_cube_add(location=location, scale=scale)
+    obj = bpy.context.object
+    obj.name = name
+    return obj
+
+
+def add_wheel(name, location):
+    bpy.ops.mesh.primitive_cylinder_add(radius=.35, depth=.25, location=location, rotation=(0, 1.5708, 0))
+    obj = bpy.context.object
+    obj.name = name
+    return obj
+
+
+def build_car():
+    body = add_cube('Body', (0, 0, .9), scale=(.9, 2.2, .45))
+    # A transformed child must not be transformed twice when sizing the body.
+    roof = add_cube('Roof', (0, .3, 1.6), scale=(.7, 1, .2))
+    roof.parent = body
+    roof.matrix_parent_inverse = body.matrix_world.inverted()
+    wheels = [
+        add_wheel('Wheel.Ft.L', (.85, -1.4, .35)),
+        add_wheel('Wheel.Ft.R', (-.85, -1.4, .35)),
+        add_wheel('Wheel.Bk.L', (.85, 1.4, .35)),
+        add_wheel('Wheel.Bk.R', (-.85, 1.4, .35)),
+    ]
+    brake = add_cube('WheelBrake.Ft.L', (.7, -1.4, .35), scale=(.05, .2, .2))
+    bpy.context.view_layer.update()
+    return body, roof, wheels, brake
+
+
+def select_pose_bone(rig, name):
+    pose_bone = rig.pose.bones[name]
+    if hasattr(pose_bone, 'select'):
+        pose_bone.select = True
+    else:
+        rig.data.bones[name].select = True
+
+
+def viewport():
+    window = bpy.context.window_manager.windows[0]
+    area = next(a for a in window.screen.areas if a.type == 'VIEW_3D')
+    region = next(r for r in area.regions if r.type == 'WINDOW')
+    return bpy.context.temp_override(window=window, area=area, region=region)
+
+
+def invoke_in_viewport(operator):
+    return operator('INVOKE_DEFAULT')
+
+
+def select_only(objs, active):
+    bpy.ops.object.select_all(action='DESELECT')
+    for obj in objs:
+        obj.select_set(True)
+    bpy.context.view_layer.objects.active = active
+
+
+def test_bounds(car_rig):
+    reset_scene()
+    body, roof, _, _ = build_car()
+    xyz = car_rig.object_bounds_xyz(body)
+    # Body spans y in [-2.2, 2.2] and z up to 1.35; the roof reaches z = 1.8.
+    expected = [-.9, .9, -2.2, 2.2, .45, 1.8]
+    check(all(abs(a - b) < 1e-4 for a, b in zip(xyz, expected)),
+          f'bounds include a transformed child exactly once: {[round(v, 3) for v in xyz]}')
+
+    coll = bpy.data.collections.new('CarParts')
+    part = bpy.data.objects.new('Part', bpy.data.meshes['Cube'] if 'Cube' in bpy.data.meshes else body.data)
+    coll.objects.link(part)
+    bpy.ops.object.collection_instance_add(collection=coll.name, location=(10, 0, 0))
+    instance = bpy.context.object
+    bpy.context.view_layer.update()
+    ixyz = car_rig.object_bounds_xyz(instance)
+    check(ixyz is not None and abs((ixyz[0] + ixyz[1]) / 2 - 10) < 1e-4,
+          f'collection instance bounds follow the instancer: {ixyz and [round(v, 3) for v in ixyz]}')
+
+    empty = bpy.data.objects.new('LonelyEmpty', None)
+    bpy.context.scene.collection.objects.link(empty)
+    check(car_rig.object_bounds_xyz(empty) is None, 'an empty without geometry has no bounds')
+
+
+def test_deformation_rig_without_invoke():
+    reset_scene()
+    result = bpy.ops.object.armature_car_deformation_rig('EXEC_DEFAULT')
+    check(result == {'FINISHED'}, f'deformation rig executes without invoke: {result}')
+    check('DEF-Body' in bpy.context.object.data.bones, 'exec-only rig has DEF-Body')
+
+
+def test_hidden_collection_still_rigs():
+    reset_scene()
+    hidden = bpy.data.collections.new('Hidden')
+    bpy.context.scene.collection.children.link(hidden)
+    layer_coll = bpy.context.view_layer.layer_collection.children['Hidden']
+    bpy.context.view_layer.active_layer_collection = layer_coll
+    layer_coll.hide_viewport = True
+    result = bpy.ops.object.armature_car_deformation_rig('EXEC_DEFAULT')
+    check(result == {'FINISHED'} and 'DEF-Body' in bpy.context.object.data.bones,
+          f'hidden active collection still rigs: {result}')
+
+
+def test_edit_mode_failure_is_reported():
+    reset_scene()
+    # Without a window, entering edit mode fails with RuntimeError.
+    with bpy.context.temp_override(window=None, area=None, region=None):
+        try:
+            result = bpy.ops.object.armature_car_deformation_rig('EXEC_DEFAULT')
+            check(result == {'CANCELLED'}, f'edit mode failure cancels: {result}')
+        except RuntimeError as error:
+            # bpy.ops raises the operator's error report; it must be ours, not a traceback.
+            message = str(error)
+            check('Cannot edit the new armature' in message and 'Traceback' not in message,
+                  f'edit mode failure is reported: {message.splitlines()[0]}')
+
+
+def test_full_pipeline():
+    reset_scene()
+    body, roof, wheels, brake = build_car()
+    select_only([body, *wheels, brake], body)
+    result = invoke_in_viewport(bpy.ops.object.armature_car_deformation_rig)
+    check(result == {'FINISHED'}, f'deformation rig from selection: {result}')
+    rig = bpy.context.object
+    bones = rig.data.bones
+    for name in ('DEF-Body', 'DEF-Wheel.Ft.L', 'DEF-Wheel.Bk.R', 'DEF-WheelBrake.Ft.L'):
+        check(name in bones, f'{name} created')
+    check(body.parent == rig and body.parent_bone == 'DEF-Body', 'body parented to DEF-Body')
+    body_bone = bones['DEF-Body']
+    check(abs(body_bone.length - 2.2) < 1e-3, f'DEF-Body length is half the body: {body_bone.length:.3f}')
+
+    result = bpy.ops.pose.car_animation_rig_generate()
+    check(result == {'FINISHED'}, f'animation rig generated: {result}')
+    check(rig.data['Car Rig'], 'armature flagged as generated')
+
+    collections = {c.name: c for c in rig.data.collections}
+    expected_visibility = {
+        'CarRig_Default_Ctrls': True,
+        'CarRig_Custom_Ctrls': False,
+        'CarRig_Def_Bone': False,
+        'CarRig_MCH_Bone': False,
+        'CarRig_MCH_Bone_Ext': False,
+    }
+    for name, visible in expected_visibility.items():
+        check(name in collections and collections[name].is_visible == visible,
+              f'bone collection {name} exists, visible={visible}')
+    check('Root' in collections['CarRig_Default_Ctrls'].bones, 'Root in default controls')
+    check('DEF-Body' in collections['CarRig_Def_Bone'].bones, 'DEF-Body in deformation collection')
+    check(rig.pose.bones['Root'].color.palette == 'THEME04', 'Root uses the direction palette')
+    check(rig.pose.bones['Wheel.Ft.L'].color.palette == 'THEME03', 'wheel uses the wheel palette')
+
+    brake_bone = bones.get('WheelBrake.Ft.L')
+    check(brake_bone is not None, 'WheelBrake.Ft.L control created')
+    wheel_colls = {c.name for c in bones['Wheel.Ft.L'].collections}
+    brake_colls = {c.name for c in brake_bone.collections} if brake_bone else set()
+    check(wheel_colls and wheel_colls <= brake_colls, f'brake shares wheel collections: {brake_colls}')
+
+    missing_brake = bones.get('WheelBrake.Ft.R')
+    check(missing_brake is None, 'no WheelBrake.Ft.R before adding missing brakes')
+    bpy.ops.object.mode_set(mode='POSE')
+    bpy.ops.pose.select_all(action='DESELECT')
+    select_pose_bone(rig, 'Wheel.Ft.R')
+    result = bpy.ops.pose.car_animation_add_brake_wheel_bones()
+    check(result == {'FINISHED'}, f'missing brake bones added: {result}')
+    added = rig.data.bones.get('WheelBrake.Ft.R')
+    check(added is not None, 'WheelBrake.Ft.R added')
+    if added:
+        added_colls = {c.name for c in added.collections}
+        right_colls = {c.name for c in rig.data.bones['Wheel.Ft.R'].collections}
+        check(right_colls <= added_colls, f'added brake shares wheel collections: {added_colls}')
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+    drivers = rig.animation_data.drivers if rig.animation_data else []
+    scaled = [d for d in drivers if d.modifiers and d.modifiers[0].type == 'GENERATOR'
+              and tuple(d.modifiers[0].coefficients)[1] != 1.0]
+    check(len(scaled) > 0, f'influence drivers carry generator modifiers: {len(scaled)}')
+
+    root = rig.pose.bones['Root']
+    scene = bpy.context.scene
+    scene.frame_start, scene.frame_end = 1, 24
+    root.location = (0, 0, 0)
+    root.keyframe_insert('location', frame=1)
+    root.location = (0, -5, 0)
+    root.keyframe_insert('location', frame=12)
+    root.location = (4, -10, 0)
+    root.keyframe_insert('location', frame=24)
+
+    result = bpy.ops.anim.car_wheels_rotation_bake('EXEC_DEFAULT', frame_start=1, frame_end=24)
+    check(result == {'FINISHED'}, f'wheels rotation baked: {result}')
+    scene.frame_set(24)
+    check(abs(rig.get('Wheel.rotation.Ft.L', 0)) > 1, f'wheel rotated: {rig.get("Wheel.rotation.Ft.L")}')
+    bake_operators = sys.modules[ADDON_NAME].bake_operators
+    animation_data = rig.animation_data
+    fcurves = bake_operators.action_fcurves(animation_data.action, getattr(animation_data, 'action_slot', None))
+    wheel_curve = fcurves.find('["Wheel.rotation.Ft.L"]') if fcurves is not None else None
+    check(wheel_curve is not None and wheel_curve.group and wheel_curve.group.name == 'Wheels rotation',
+          'baked wheel curve sits in the Wheels rotation group of the rig slot')
+
+    result = bpy.ops.anim.car_steering_bake('EXEC_DEFAULT', frame_start=1, frame_end=24)
+    check(result == {'FINISHED'}, f'steering baked: {result}')
+    steering = [abs(scene.frame_set(f) or rig.get('Steering.rotation', 0)) for f in range(1, 25)]
+    check(max(steering) > .01, f'steering follows the turn: max {max(steering):.3f}')
+
+    result = bpy.ops.anim.car_clear_steering_wheels_rotation('EXEC_DEFAULT')
+    check(result == {'FINISHED'}, f'steering and wheels cleared: {result}')
+    scene.frame_set(24)
+    check(rig.get('Wheel.rotation.Ft.L') == 0 and rig.get('Steering.rotation') == 0,
+          'cleared rotations stay at rest')
+
+
+def main():
+    print(f'[e2e] Blender {bpy.app.version_string}', flush=True)
+    rigacar = import_addon()
+    for test in (lambda: test_bounds(rigacar.car_rig), test_deformation_rig_without_invoke,
+                 test_hidden_collection_still_rigs, test_edit_mode_failure_is_reported,
+                 test_full_pipeline):
+        try:
+            with viewport():
+                test()
+        except Exception:
+            traceback.print_exc()
+            failures.append(f'exception in {test}')
+    print(f'[e2e] {len(failures)} failure(s)', flush=True)
+    os._exit(1 if failures else 0)
+
+
+if bpy.app.background:
+    print('[e2e] FAIL needs a window: run under xvfb-run without --background', flush=True)
+    os._exit(2)
+bpy.app.timers.register(main, first_interval=.5)

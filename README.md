@@ -2,7 +2,13 @@
 
 ## Fork
 
-_This fork supports **Blender 4.0+** and consolidates fixes from the community while the maintainer is absent._
+_This fork supports **Blender 4.0+** (tested on 4.0, 4.5 LTS and 5.1) and consolidates fixes from the community while the maintainer is absent._
+
+Run the end-to-end test from the repository root with any Blender; it needs a window, so use a virtual display when headless:
+
+```bash
+xvfb-run -a blender --factory-startup --python tests/e2e.py
+```
 
 Upstream readme description below.
 
