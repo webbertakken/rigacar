@@ -102,6 +102,17 @@ def action_fcurves(action, slot=None):
     return channelbag.fcurves if channelbag is not None else None
 
 
+def default_bake_frame_range(obj, scene):
+    """The frames the rig's own keys span, or the scene's range when it has none (as with an animated path)."""
+    animation_data = obj.animation_data
+    if animation_data and animation_data.action:
+        fcurves = action_fcurves(animation_data.action, getattr(animation_data, 'action_slot', None))
+        ranges = [fc.range() for fc in fcurves if len(fc.keyframe_points) > 0] if fcurves is not None else []
+        if ranges:
+            return math.floor(min(r[0] for r in ranges)), math.ceil(max(r[1] for r in ranges))
+    return scene.frame_start, scene.frame_end
+
+
 def find_fcurves(action, data_path, count):
     fcurves = action_fcurves(action)
     return [fcurves.find(data_path, index=i) if fcurves is not None else None for i in range(count)]
@@ -224,16 +235,16 @@ class BakingOperator(object):
                     obj.mode in ('POSE', 'OBJECT'))
 
     def invoke(self, context, event):
-        if context.object.animation_data is None:
-            context.object.animation_data_create()
-        if context.object.animation_data.action is None:
-            context.object.animation_data.action = bpy.data.actions.new("%sAction" % context.object.name)
-
-        action = context.object.animation_data.action
-        self.frame_start = int(action.frame_range[0])
-        self.frame_end = int(action.frame_range[1])
-
+        self.frame_start, self.frame_end = default_bake_frame_range(context.object, context.scene)
         return context.window_manager.invoke_props_dialog(self)
+
+    def _ensure_action(self, context):
+        """Baked keys go into the rig's action, which an animated path leaves the rig without."""
+        obj = context.object
+        if obj.animation_data is None:
+            obj.animation_data_create()
+        if obj.animation_data.action is None:
+            obj.animation_data.action = bpy.data.actions.new("%sAction" % obj.name)
 
     def draw(self, context):
         self.layout.use_property_split = True
@@ -333,6 +344,7 @@ class ANIM_OT_carWheelsRotationBake(bpy.types.Operator, BakingOperator):
     def execute(self, context):
         if self._only_armature_object_moves(context):
             return {'CANCELLED'}
+        self._ensure_action(context)
         context.object['wheels_on_y_axis'] = False
         self._bake_wheels_rotation(context)
         return {'FINISHED'}
@@ -427,6 +439,7 @@ class ANIM_OT_carSteeringBake(bpy.types.Operator, BakingOperator):
     def execute(self, context):
         if self._only_armature_object_moves(context):
             return {'CANCELLED'}
+        self._ensure_action(context)
         if self.frame_end > self.frame_start:
             if 'Steering' in context.object.data.bones and 'MCH-Steering.rotation' in context.object.data.bones:
                 steering = context.object.data.bones['Steering']

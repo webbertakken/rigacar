@@ -29,6 +29,7 @@ _This fork keeps Rigacar working on current Blender and consolidates fixes from 
 - Rigging keeps the car where it is: parented or scaled parts, a 3D cursor away from the origin, and _Move origin_ no longer shift it.
 - Operators stay quietly unavailable, instead of raising errors, when no car rig is active.
 - Baking explains itself when only the armature object moves, instead of silently baking nothing.
+- The bake dialog offers the frames the rig is keyed on, or the scene range when only a path is animated (Follow Path's Animate Path).
 
 ### Troubleshooting
 
