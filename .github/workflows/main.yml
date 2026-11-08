@@ -8,11 +8,11 @@ jobs:
   checks:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Run PEP8
         id: auto-pep8
-        uses: peter-evans/autopep8@v2
+        uses: peter-evans/autopep8@2209b8c47cf1eec7550c1b4fb7108c0305656723 # v2
         with:
           args: --recursive --in-place --aggressive --aggressive .
 
