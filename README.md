@@ -62,6 +62,10 @@ To capture the rigged sedan for documentation or a pull request:
 xvfb-run -a blender --factory-startup --python tests/screenshot.py -- out.png --steer
 ```
 
+### Release
+
+Bump `"version"` in `bl_info` (`__init__.py`) to the new version, then publish a release with a matching `v` tag, such as `(8, 2)` for `v8.2.0`. The release workflow refuses to attach the zip when they differ.
+
 Upstream readme description below.
 
 ## Upstream
