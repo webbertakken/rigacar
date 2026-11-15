@@ -143,6 +143,26 @@ def create_property_animation(context, property_name):
     return fcurve
 
 
+def thin_linear_keys(keys, tolerance):
+    """
+    Drops the (frame, value) keys that linear interpolation between the kept ones reproduces within tolerance.
+    Every dropped key is held to the line that replaces it, so a value that zigzags keeps its turns.
+    """
+    if len(keys) < 3:
+        return list(keys)
+    kept = [keys[0]]
+    skipped = []
+    for key, following in zip(keys[1:-1], keys[2:]):
+        (f0, v0), (f1, v1) = kept[-1], following
+        if all(abs(v - (v0 + (v1 - v0) * (f - f0) / (f1 - f0))) < tolerance for f, v in skipped + [key]):
+            skipped.append(key)
+        else:
+            kept.append(key)
+            skipped = []
+    kept.append(keys[-1])
+    return kept
+
+
 class FCurvesEvaluator(object):
     """Encapsulates a bunch of FCurves for vector animations."""
 
@@ -272,6 +292,27 @@ class BakingOperator(object):
             return True
         return False
 
+    def _root_never_moves(self, context):
+        """Reports when the Root bone holds still over the frames to bake, which leaves nothing to bake."""
+        root = context.object.pose.bones.get('Root')
+        if root is None:
+            return False
+        scene = context.scene
+        frame = scene.frame_current
+        try:
+            scene.frame_set(self.frame_start)
+            rest = root.matrix.copy()
+            for f in range(self.frame_start + 1, self.frame_end + 1):
+                scene.frame_set(f)
+                if any(abs(a - b) > 1e-6 for row, rest_row in zip(root.matrix, rest) for a, b in zip(row, rest_row)):
+                    return False
+        finally:
+            scene.frame_set(frame)
+        self.report({'ERROR'}, 'Nothing to bake: the Root bone never moves between frames %d and %d. '
+                               'Animate the Root bone in Pose mode, or put a Follow Path constraint on it.'
+                    % (self.frame_start, self.frame_end))
+        return True
+
     def _create_euler_evaluator(self, action, source_bone):
         fcurve_name = 'pose.bones["%s"].rotation_euler' % source_bone.name
         fc_root_rot = find_fcurves(action, fcurve_name, 3)
@@ -342,7 +383,7 @@ class ANIM_OT_carWheelsRotationBake(bpy.types.Operator, BakingOperator):
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
-        if self._only_armature_object_moves(context):
+        if self._only_armature_object_moves(context) or self._root_never_moves(context):
             return {'CANCELLED'}
         self._ensure_action(context)
         context.object['wheels_on_y_axis'] = False
@@ -437,7 +478,7 @@ class ANIM_OT_carSteeringBake(bpy.types.Operator, BakingOperator):
         self.layout.prop(self, 'keyframe_tolerance')
 
     def execute(self, context):
-        if self._only_armature_object_moves(context):
+        if self._only_armature_object_moves(context) or self._root_never_moves(context):
             return {'CANCELLED'}
         self._ensure_action(context)
         if self.frame_end > self.frame_start:
@@ -449,19 +490,22 @@ class ANIM_OT_carSteeringBake(bpy.types.Operator, BakingOperator):
         return {'FINISHED'}
 
     def _evaluate_rotation_per_frame(self, action, bone_offset, bone):
+        """
+        The steering at each frame, from the front axle's direction of travel through that frame.
+        The step from the frame before to the frame after is parallel to the path on a circle, so the steering
+        follows the curve alone, not how fast the car drives along it.
+        """
         loc_evaluator = self._create_location_evaluator(action, bone)
         rot_evaluator = self._create_quaternion_evaluator(action, bone)
 
         distance_threshold = pow(bone_offset * max(self.keyframe_tolerance, .001), 2)
-        steering_threshold = bone_offset * self.keyframe_tolerance * .1
         bone_direction_vector = (bone.head_local - bone.tail_local).normalized()
         bone_normal_vector = mathutils.Vector((1, 0, 0))
 
-        current_pos = loc_evaluator.evaluate(self.frame_start)
-        previous_steering_position = None
-        for f in range(self.frame_start, self.frame_end - 1):
-            next_pos = loc_evaluator.evaluate(f + 1)
-            steering_direction_vector = next_pos - current_pos
+        for f in range(self.frame_start, self.frame_end + 1):
+            before = loc_evaluator.evaluate(max(f - 1, self.frame_start))
+            after = loc_evaluator.evaluate(min(f + 1, self.frame_end))
+            steering_direction_vector = after - before
 
             if steering_direction_vector.length_squared < distance_threshold:
                 continue
@@ -481,13 +525,7 @@ class ANIM_OT_carSteeringBake(bpy.types.Operator, BakingOperator):
                                                                            world_space_bone_direction_vector,
                                                                            world_space_bone_normal_vector)
 
-            if previous_steering_position is not None \
-                    and abs(steering_position - previous_steering_position) < steering_threshold:
-                continue
-
             yield f, steering_position
-            current_pos = next_pos
-            previous_steering_position = steering_position
 
     @cursor('WAIT')
     def _bake_steering_rotation(self, context, bone_offset, bone):
@@ -506,7 +544,8 @@ class ANIM_OT_carSteeringBake(bpy.types.Operator, BakingOperator):
             pb: bpy.types.PoseBone = context.object.pose.bones[bone.name]
             pb.matrix_basis.identity()
 
-            for f, steering_pos in self._evaluate_rotation_per_frame(baked_action, bone_offset, bone):
+            keys = list(self._evaluate_rotation_per_frame(baked_action, bone_offset, bone))
+            for f, steering_pos in thin_linear_keys(keys, bone_offset * self.keyframe_tolerance * .1):
                 kf = fc_rot.keyframe_points.insert(f, steering_pos)
                 kf.type = 'JITTER'
                 kf.interpolation = 'LINEAR'
