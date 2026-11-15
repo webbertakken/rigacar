@@ -5,6 +5,7 @@ under a virtual display when headless, from the repository root:
     xvfb-run -a blender --factory-startup --python tests/e2e.py
 Exits non-zero when any check fails.
 """
+import math
 import os
 import sys
 import tempfile
@@ -551,6 +552,184 @@ def test_scaled_parented_model_rigs_like_plain():
     check(max_bounds_delta(reference_objects, objects_before) < 1e-4, 'both models share the same world geometry')
 
 
+def follow_circle(rig, radius, frames, ease=True):
+    """Puts the Root bone on a circle with Follow Path, a quarter of the way round, easing in and out or not."""
+    bpy.ops.object.mode_set(mode='OBJECT')
+    bpy.ops.curve.primitive_bezier_circle_add(radius=radius, location=(radius, 0, 0))
+    path = bpy.context.object
+    path.select_set(False)
+    rig.select_set(True)
+    bpy.context.view_layer.objects.active = rig
+    cns = rig.pose.bones['Root'].constraints.new('FOLLOW_PATH')
+    cns.target = path
+    cns.use_curve_follow = True
+    cns.use_fixed_location = True
+    cns.forward_axis = 'TRACK_NEGATIVE_Y'
+    data_path = 'pose.bones["Root"].constraints["%s"].offset_factor' % cns.name
+    for frame, factor in ((1, 0.0), (frames, 0.25)):
+        cns.offset_factor = factor
+        rig.keyframe_insert(data_path, frame=frame)
+    if not ease:
+        animation_data = rig.animation_data
+        fcurves = sys.modules[ADDON_NAME].bake_operators.action_fcurves(
+            animation_data.action, getattr(animation_data, 'action_slot', None))
+        for keyframe in fcurves.find(data_path).keyframe_points:
+            keyframe.interpolation = 'LINEAR'
+    scene = bpy.context.scene
+    scene.frame_start, scene.frame_end = 1, frames
+
+
+def root_space(rig, matrix):
+    return (rig.matrix_world @ rig.pose.bones['Root'].matrix).inverted() @ matrix
+
+
+def front_axle_steering(rig, frames):
+    """Per frame, where the steering control must sit for the front wheels to point where the front axle goes."""
+    bones = rig.data.bones
+    offset = abs(bones['Steering'].head_local.y - bones['MCH-Steering.rotation'].head_local.y)
+    scene = bpy.context.scene
+    track = []
+    for frame in range(1, frames + 1):
+        scene.frame_set(frame)
+        axle = rig.matrix_world @ rig.pose.bones['MCH-Steering.rotation'].matrix
+        track.append((axle.translation.copy(), axle.to_3x3() @ mathutils.Vector((0, -1, 0)),
+                      axle.to_3x3() @ mathutils.Vector((1, 0, 0))))
+    steering = {}
+    for i in range(1, len(track) - 1):
+        travel = track[i + 1][0] - track[i - 1][0]
+        heading, side = track[i][1], track[i][2]
+        steering[i + 1] = offset * travel.dot(side) / travel.dot(heading)
+    return steering
+
+
+def test_steering_follows_the_curve_at_any_speed():
+    """Upstream #62 and #138: baked steering points the front wheels along the path, and its control rides along."""
+    frames = 48
+    scene = bpy.context.scene
+    for ease in (True, False):
+        reset_scene()
+        body, _, wheels, brake = build_car()
+        rig = rig_car(body, wheels, brake)
+        follow_circle(rig, 8, frames, ease)
+        expected = front_axle_steering(rig, frames)
+        result = bpy.ops.anim.car_steering_bake('EXEC_DEFAULT', frame_start=1, frame_end=frames)
+        check(result == {'FINISHED'}, f'circle, easing {ease}: steering baked: {result}')
+        errors = {}
+        for frame, want in expected.items():
+            scene.frame_set(frame)
+            errors[frame] = abs(rig.get('Steering.rotation', 0) - want)
+        worst = max(errors, key=errors.get)
+        check(errors[worst] < .01, f'circle, easing {ease}: steering points the front wheels where the front axle '
+                                   f'goes: worst at frame {worst}, off by {errors[worst]:.3f}')
+
+        ahead = []
+        for frame in (1, frames // 2, frames - 1):
+            scene.frame_set(frame)
+            ahead.append(root_space(rig, rig.matrix_world @ rig.pose.bones['Steering'].matrix).translation.y)
+        check(max(ahead) - min(ahead) < 1e-3, f'circle, easing {ease}: the steering control rides ahead of the car: '
+                                              f'{[round(y, 3) for y in ahead]}')
+
+
+def turn_keeping_world(objs, turn):
+    """Gives each object an unapplied rotation, counter-rotating its mesh so the world geometry is unchanged."""
+    for obj in objs:
+        world = obj.matrix_world.copy()
+        obj.data.transform(turn.inverted())
+        obj.matrix_world = world @ turn
+        bpy.context.view_layer.update()
+
+
+def test_wheels_roll_forward_whatever_the_parts_rotation():
+    """Upstream #75: baked wheels roll the way the car drives, for mirrored wheels and unapplied rotations too."""
+    variants = {
+        'plain': lambda body, wheels: None,
+        'mirrored right wheels': lambda body, wheels: turn_keeping_world(
+            [wheels[1], wheels[3]], mathutils.Matrix.Rotation(math.pi, 4, 'Z')),
+        'unapplied 90 degree rotations': lambda body, wheels: turn_keeping_world(
+            [body, *wheels], mathutils.Matrix.Rotation(math.pi / 2, 4, 'X')),
+    }
+    scene = bpy.context.scene
+    for name, prepare in variants.items():
+        reset_scene()
+        body, _, wheels, brake = build_car()
+        prepare(body, wheels)
+        before = world_bounds([body, *wheels])
+        rig = rig_car(body, wheels, brake)
+        check(max_bounds_delta(before, world_bounds([body, *wheels])) < SETTLE, f'{name}: stays in place when rigged')
+        root = rig.pose.bones['Root']
+        for frame, y in ((1, 0), (24, -4)):
+            root.location = (0, y, 0)
+            root.keyframe_insert('location', frame=frame)
+        bpy.ops.anim.car_wheels_rotation_bake('EXEC_DEFAULT', frame_start=1, frame_end=24)
+        rolls = []
+        for wheel in wheels:
+            spins = []
+            for frame in (12, 13):
+                scene.frame_set(frame)
+                spins.append(root_space(rig, wheel.matrix_world).to_quaternion())
+            axis, angle = (spins[1] @ spins[0].inverted()).to_axis_angle()
+            rolls.append(axis.x * (angle - 2 * math.pi if angle > math.pi else angle))
+        check(all(r > .1 for r in rolls), f'{name}: every wheel rolls forward: {[round(r, 3) for r in rolls]}')
+
+
+def test_bake_refuses_a_rig_that_never_moves():
+    """Upstream #74: baking without Root animation says so, instead of quietly keying nothing."""
+    reset_scene()
+    body, _, wheels, brake = build_car()
+    rig = rig_car(body, wheels, brake)
+    for operator in (bpy.ops.anim.car_wheels_rotation_bake, bpy.ops.anim.car_steering_bake):
+        try:
+            result = operator('EXEC_DEFAULT', frame_start=1, frame_end=24)
+            check(False, f'{operator.idname_py()} refuses a rig that never moves: {result}')
+        except RuntimeError as error:
+            check('never moves' in str(error), f'{operator.idname_py()} explains: {str(error).splitlines()[0]}')
+    animation_data = rig.animation_data
+    fcurves = sys.modules[ADDON_NAME].bake_operators.action_fcurves(
+        animation_data.action, getattr(animation_data, 'action_slot', None)) \
+        if animation_data and animation_data.action else None
+    check(not fcurves, f'a refused bake keys nothing: {[f.data_path for f in fcurves or []]}')
+
+
+def widget_size(rig, name):
+    pose_bone = rig.pose.bones[name]
+    corners = [mathutils.Vector(c) for c in pose_bone.custom_shape.bound_box]
+    extent = max(max(c[i] for c in corners) - min(c[i] for c in corners) for i in range(3))
+    return extent * max(pose_bone.custom_shape_scale_xyz) * pose_bone.bone.length
+
+
+def test_widgets_fit_the_car_at_any_scale():
+    """Upstream #144 and #150: every control has its widget, sized to the car, however the model was imported."""
+    controls = ('Root', 'Drift', 'Steering', 'Suspension', 'Wheel.Ft.L', 'WheelBrake.Ft.L')
+    ratios = {}
+    for unit in (1.0, .01, 100.0):
+        reset_scene()
+        body, _, wheels, brake = build_car()
+        group = bpy.data.objects.new('Import', None)
+        bpy.context.scene.collection.objects.link(group)
+        for obj in (body, *wheels, brake):
+            parent_keeping_transform(obj, group)
+        group.scale = (unit, unit, unit)
+        bpy.context.view_layer.update()
+        car_length = (lambda xyz: xyz[3] - xyz[2])(world_bounds([body])[0])
+        rig = rig_car(body, wheels, brake)
+        bare = [b.name for b in rig.pose.bones if b.custom_shape is None and b.bone.collections
+                and any(c.name == 'CarRig_Default_Ctrls' for c in b.bone.collections)]
+        check(not bare, f'import scale {unit}: every control has a widget: {bare or "none bare"}')
+        ratios[unit] = [widget_size(rig, name) / car_length for name in controls]
+    worst = max(abs(a / b - 1) for unit in ratios for a, b in zip(ratios[unit], ratios[1.0]))
+    check(worst < 1e-3, f'widgets keep their size to the car at import scales .01 to 100: off by {worst:.4f}')
+
+    for widget in [o for o in bpy.data.objects if o.name.startswith('WGT-CarRig')]:
+        bpy.data.objects.remove(widget)
+    body, _, wheels, brake = build_car()
+    for obj in (body, *wheels, brake):
+        obj.location.x += 6
+    bpy.context.view_layer.update()
+    rig = rig_car(body, wheels, brake)
+    check(all(rig.pose.bones[name].custom_shape is not None for name in controls),
+          'widgets deleted by hand are made again for the next car')
+
+
 def main():
     print(f'[e2e] Blender {bpy.app.version_string}', flush=True)
     rigacar = import_addon()
@@ -559,7 +738,9 @@ def main():
                  test_full_pipeline, test_rig_drives_model, test_bake_along_follow_path_keeps_keyframes,
                  test_bake_explains_an_animated_armature_object, test_default_bake_frame_range,
                  test_bake_along_an_animated_path, test_real_model_rigs_and_rolls, test_polls_without_a_rig,
-                 test_scaled_parented_model_rigs_like_plain):
+                 test_scaled_parented_model_rigs_like_plain, test_steering_follows_the_curve_at_any_speed,
+                 test_wheels_roll_forward_whatever_the_parts_rotation, test_bake_refuses_a_rig_that_never_moves,
+                 test_widgets_fit_the_car_at_any_scale):
         try:
             with viewport():
                 test()

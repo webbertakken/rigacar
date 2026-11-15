@@ -40,6 +40,8 @@ _This fork keeps Rigacar working on current Blender and consolidates fixes from 
 - **Without target objects, the rig doesn't fit the car.** Adjust the bones in the _Add car deformation rig_ panel straight after adding it, or in Edit mode.
 - **Baking does nothing.** Animate the `Root` bone in Pose mode, not the armature object. A _Follow Path_ constraint goes on the `Root` bone too.
 - **The car distorts in bends along a path.** Apply the curve's scale (_Object > Apply > Scale_) before following it.
+- **The car or its steering twitches along a path.** Follow Path follows the curve as straight segments, so the car turns in small jerks, and the baked steering with it. Raise the curve's _Resolution Preview U_ (_Object Data > Shape_, 64 is plenty) and bake again.
+- **Bake says the Root bone never moves.** Baking reads the Root bone's motion over the frames given. Animate the Root bone first, or check the frame range.
 
 ### Test
 
